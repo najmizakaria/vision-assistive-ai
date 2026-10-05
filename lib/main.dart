@@ -10,19 +10,26 @@ import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_gemma_litertlm/flutter_gemma_litertlm.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:gdg_edge_ai/tool_handlers.dart';
 import 'package:object_detection/object_detection.dart';
 import 'package:flutter_gemma_agent/flutter_gemma_agent.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'camera_page.dart';
 import 'chatbot_page.dart';
 import 'account_page.dart';
 import 'google_auth_service.dart';
 
-const String _modelUrl = ""; // == MODEL VARIANT PLACEHOLDER ==
+const String _modelUrl =
+    'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/'
+    'resolve/main/gemma-4-E2B-it.litertlm';
 
-const _localSkillNames = []; // == AGENTIC SKILLS PLACEHOLDER ==
+const _localSkillNames = [
+  'list-events',
+  'create-calendar-event',
+  'read-latest-email',
+  'kitchen-adventure',
+];
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -172,38 +179,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _startInitialization() async {
-    // NOTE: Google sign-in must NOT block startup. GoogleSignIn.authenticate()
-    // launches an interactive flow that never returns on a device without a
-    // Google account (e.g. a fresh emulator), which previously left the whole
-    // app stuck on "Signing in with Google..." because _initEverything() (camera,
-    // model, detector) was awaited *after* auth. Camera + offline Gemma chat do
-    // not need Google auth; only the calendar/email tools do, and those are
-    // reachable from the Account tab's Sign in button (onSignIn: _ensureGoogleAuth).
-    //
-    // So we always initialize the core app first, and attempt a silent,
-    // non-interactive sign-in in the background (no UI, never blocks). Interactive
-    // sign-in happens on demand from the Account tab.
-    unawaited(_attemptSilentGoogleAuth());
-    await _initEverything();
-  }
-
-  // Non-interactive, non-blocking sign-in attempt. Restores an existing Google
-  // session if one is available, but never pops the interactive sign-in UI and
-  // never blocks app initialization. Safe to fire-and-forget.
-  Future<void> _attemptSilentGoogleAuth() async {
-    try {
-      final restored = await GoogleAuthService.instance.attemptSilentSignIn();
-      if (!mounted || !restored) return;
-      setState(() {
-        _isGoogleAuthenticated = true;
-        final account = GoogleAuthService.instance.account;
-        _authMessage = 'Signed in as ${account?.email ?? 'Google account'}';
-      });
-      _agentSession?.registry.select('list-events');
-    } catch (_) {
-      // No existing session / not signed in — leave the user signed out.
-      // They can sign in from the Account tab when they want calendar/email.
+    if (mounted) {
+      setState(() => _stage = _InitStage.auth);
     }
+    await _ensureGoogleAuth();
+    await _initEverything();
   }
 
   Future<void> _initEverything() async {
@@ -219,7 +199,77 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final hfToken = dotenv.env['HUGGINGFACE_TOKEN'];
 
-      // == INITIALISATION PLACEHOLDER ==
+      bool modelDownloaded = false;
+      int retryCount = 0;
+      const maxRetries = 5;
+
+      await WakelockPlus.enable();
+
+      try {
+        while (!modelDownloaded && retryCount < maxRetries) {
+          try {
+            await FlutterGemma.installModel(
+                  modelType: ModelType.gemma4,
+                  fileType: ModelFileType.litertlm,
+                )
+                .fromNetwork(
+                  _modelUrl,
+                  token: hfToken?.isNotEmpty == true ? hfToken : null,
+                )
+                .withProgress((progress) {
+                  if (mounted) {
+                    setState(() => _downloadProgress = progress / 100);
+                  }
+                })
+                .install();
+
+            modelDownloaded = true;
+          } catch (e) {
+            final errorStr = e.toString().toLowerCase();
+            if (errorStr.contains('canceled') ||
+                errorStr.contains('cancelled')) {
+              retryCount++;
+              debugPrint(
+                'Download interrupted by OS. Resuming (Attempt $retryCount of $maxRetries)...',
+              );
+              await Future.delayed(const Duration(seconds: 2));
+            } else {
+              rethrow;
+            }
+          }
+        }
+
+        if (!modelDownloaded) {
+          throw Exception(
+            'Failed to download model after $maxRetries attempts.',
+          );
+        }
+      } finally {
+        await WakelockPlus.disable();
+      }
+
+      setState(() => _stage = _InitStage.modelLoad);
+
+      _model = await FlutterGemma.getActiveModel(
+        maxTokens: 4096,
+        preferredBackend: PreferredBackend.cpu,
+        preferredVisionBackend: PreferredBackend.cpu,
+        supportImage: true,
+        maxNumImages: 1,
+      );
+
+      await _createAgentSession();
+
+      setState(() => _stage = _InitStage.detector);
+      _detector = await ObjectDetector.create();
+
+      _tts = FlutterTts();
+      await _tts!.setLanguage('en-US');
+      await _tts!.setSpeechRate(0.5);
+      await _tts!.setPitch(1.0);
+
+      if (!mounted) return;
+      setState(() => _stage = _InitStage.ready);
     } catch (e) {
       if (!mounted) return;
       setState(() => _initError = 'Setup failed: $e');
@@ -227,6 +277,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _ensureGoogleAuth() async {
+    if (!mounted || _isSigningIn) return;
     setState(() {
       _isSigningIn = true;
       _authMessage = null;
@@ -422,6 +473,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 initError: _initError,
                 isDownloading: _stage == _InitStage.modelDownload,
                 downloadProgress: _downloadProgress,
+                isGoogleAuthenticated: _isGoogleAuthenticated,
+                isSigningIn: _isSigningIn,
+                onSignIn: _ensureGoogleAuth,
+                onSwitchAccount: _switchGoogleAccount,
               ),
     );
   }
@@ -433,12 +488,20 @@ class _InitializationView extends StatelessWidget {
     required this.initError,
     required this.isDownloading,
     required this.downloadProgress,
+    required this.isGoogleAuthenticated,
+    required this.isSigningIn,
+    required this.onSignIn,
+    required this.onSwitchAccount,
   });
 
   final String stageLabel;
   final String? initError;
   final bool isDownloading;
   final double? downloadProgress;
+  final bool isGoogleAuthenticated;
+  final bool isSigningIn;
+  final VoidCallback onSignIn;
+  final VoidCallback onSwitchAccount;
 
   @override
   Widget build(BuildContext context) {
@@ -464,6 +527,21 @@ class _InitializationView extends StatelessWidget {
                       )
                     else
                       const CircularProgressIndicator(),
+                    if (!isGoogleAuthenticated)
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.login),
+                        label: const Text('Sign in with Google'),
+                        onPressed: isSigningIn ? null : onSignIn,
+                      ),
+                    if (isGoogleAuthenticated)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 16.0),
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.switch_account),
+                          label: const Text('Switch Google account'),
+                          onPressed: isSigningIn ? null : onSwitchAccount,
+                        ),
+                      ),
                   ],
                 ),
       ),

@@ -1,9 +1,9 @@
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:googleapis/calendar/v3.dart' as calendar;
-import 'package:googleapis/gmail/v1.dart' as gmail;
 import 'package:googleapis_auth/googleapis_auth.dart' as auth;
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:googleapis/calendar/v3.dart' as calendar;
+import 'package:googleapis/gmail/v1.dart' as gmail;
 
 // Handles Google Sign-In and produces authenticated googleapis clients
 // (Calendar, Gmail) for use by the chatbot's tools.
@@ -19,21 +19,30 @@ class GoogleAuthService {
   static final GoogleAuthService instance = GoogleAuthService._();
 
   static const List<String> scopes = [
-    // == SCOPE PLACEHOLDER ==
+    calendar.CalendarApi.calendarEventsScope,
+    gmail.GmailApi.gmailReadonlyScope,
   ];
 
   final GoogleSignIn _googleSignIn = GoogleSignIn.instance;
   bool _initialized = false;
   auth.AuthClient? _authClient;
+  Future<auth.AuthClient>? _pendingAuthentication;
   GoogleSignInAccount? _account;
 
   GoogleSignInAccount? get account => _account;
 
   Future<void> _ensureInitialized() async {
     if (_initialized) return;
-    final serverClientId = dotenv.env['GOOGLE_SERVER_CLIENT_ID'];
+    const configuredClientId = String.fromEnvironment(
+      'GOOGLE_SERVER_CLIENT_ID',
+    );
+    final serverClientId =
+        (configuredClientId.isNotEmpty
+                ? configuredClientId
+                : dotenv.env['GOOGLE_SERVER_CLIENT_ID'] ?? '')
+            .trim();
 
-    if (serverClientId == null || serverClientId.isEmpty) {
+    if (serverClientId.isEmpty) {
       throw StateError(
         'GOOGLE_SERVER_CLIENT_ID is missing. Add it to .env or pass it with '
         '--dart-define=GOOGLE_SERVER_CLIENT_ID=...',
@@ -51,8 +60,7 @@ class GoogleAuthService {
   Future<bool> attemptSilentSignIn() async {
     await _ensureInitialized();
     try {
-      final account =
-          await _googleSignIn.attemptLightweightAuthentication();
+      final account = await _googleSignIn.attemptLightweightAuthentication();
       if (account == null) return false;
       _account = account;
       return true;
@@ -66,13 +74,28 @@ class GoogleAuthService {
   // client that can back any googleapis API class.
   Future<auth.AuthClient> getAuthenticatedClient() async {
     if (_authClient != null) return _authClient!;
+    final pending = _pendingAuthentication;
+    if (pending != null) return pending;
 
+    final authentication = _authenticateClient();
+    _pendingAuthentication = authentication;
+    try {
+      return await authentication;
+    } finally {
+      _pendingAuthentication = null;
+    }
+  }
+
+  Future<auth.AuthClient> _authenticateClient() async {
     await _ensureInitialized();
 
     GoogleSignInAccount? account;
     try {
       account = await _googleSignIn.attemptLightweightAuthentication();
-    } catch (_) {
+    } on GoogleSignInException catch (error) {
+      if (error.code == GoogleSignInExceptionCode.clientConfigurationError) {
+        rethrow;
+      }
       account = null;
     }
     account ??= await _googleSignIn.authenticate();
@@ -90,6 +113,16 @@ class GoogleAuthService {
 
     _authClient = client;
     return client;
+  }
+
+  Future<calendar.CalendarApi> getCalendarApi() async {
+    final client = await getAuthenticatedClient();
+    return calendar.CalendarApi(client);
+  }
+
+  Future<gmail.GmailApi> getGmailApi() async {
+    final client = await getAuthenticatedClient();
+    return gmail.GmailApi(client);
   }
 
   Future<void> signOut() async {

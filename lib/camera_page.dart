@@ -70,7 +70,7 @@ class CameraPageState extends State<CameraPage> {
     Future<Uint8List> imageBytes,
   ) async {
     final detectedBytes = await imageBytes;
-    final detections; // == OBJECT DETECTION PLACEHOLDER ==
+    final detections = await widget.detector.detect(detectedBytes);
 
     final detectionSummary = _formatDetectionSummary(detections);
     debugPrint('Camera image bytes: ${detectedBytes.length}');
@@ -83,7 +83,8 @@ class CameraPageState extends State<CameraPage> {
 
     String response = '';
     await for (final event in widget.agent.ask(
-      // == INFERENCE PLACEHOLDER ==
+      inferencePrompt,
+      imageBytes: detectedBytes,
     )) {
       if (event is TextChunkEvent) {
         response += event.text;
@@ -129,7 +130,7 @@ class CameraPageState extends State<CameraPage> {
       if (!mounted) return;
 
       setState(() => _isProcessing = false);
-      // == TTS PLACEHOLDER ==
+      widget.tts.speak(ttsMessage ?? resultMessage);
 
       await Navigator.of(context).push(
         MaterialPageRoute<void>(

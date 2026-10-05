@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_gemma_agent/flutter_gemma_agent.dart';
 import 'package:googleapis/calendar/v3.dart' as calendar;
@@ -89,7 +91,7 @@ class ToolHandlers {
         'start': created.start?.dateTime?.toIso8601String(),
       };
     } catch (e) {
-      print('❌ Calendar API Error: $e');
+      debugPrint('❌ Calendar API Error: $e');
       if (e.toString().contains('401') || e.toString().contains('403')) {
         GoogleAuthService.instance.invalidateClient();
       }
@@ -112,7 +114,7 @@ class ToolHandlers {
       );
       final dayEnd = dayStart.add(const Duration(days: 1));
 
-      print('📅 Fetching events for: $dayStart');
+      debugPrint('📅 Fetching events for: $dayStart');
 
       final result = await api.events.list(
         'primary',
@@ -157,7 +159,7 @@ class ToolHandlers {
         'events': events,
       };
     } catch (e) {
-      print('❌ Calendar API Error: $e');
+      debugPrint('❌ Calendar API Error: $e');
       // 2. Only invalidate the client if the token is ACTUALLY expired (401 Unauthorized)
       if (e.toString().contains('401') || e.toString().contains('403')) {
         GoogleAuthService.instance.invalidateClient();
@@ -234,7 +236,7 @@ class LocalDartSkillExecutor extends SkillExecutor {
     String dataJson, {
     String? secret,
   }) async {
-    print('⚡ Executing native Dart function for ${skill.name}!');
+    debugPrint('⚡ Executing native Dart function for ${skill.name}!');
     try {
       // Safely decode args (readlatest--email will just pass an empty map)
       final args =

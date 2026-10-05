@@ -68,7 +68,7 @@ class ChatbotPageState extends State<ChatbotPage> {
         }
       },
       onError: (errorNotification) {
-        print('Speech recognition error: $errorNotification');
+        debugPrint('Speech recognition error: $errorNotification');
         if (mounted) setState(() => _isListening = false);
       },
     );
@@ -191,7 +191,8 @@ class ChatbotPageState extends State<ChatbotPage> {
               : '${buildDateContext()}\n\n$text';
 
       await for (final event in widget.agent.ask(
-        // == AGENT PLACEHOLDER ==
+        prompt,
+        imageBytes: imageBytes,
       )) {
         if (event is TextChunkEvent) {
           setState(() {
@@ -201,7 +202,7 @@ class ChatbotPageState extends State<ChatbotPage> {
         }
         // You can optionally handle other events here, like ToolCallEvent
         else if (event is ToolCallEvent) {
-          print('Bot is calling tool: ${event.toolName}');
+          debugPrint('Bot is calling tool: ${event.toolName}');
           setState(() {
             botMessage.text =
                 '${botMessage.text ?? ''}\n[Checking ${event.toolName}...]\n';
@@ -212,7 +213,7 @@ class ChatbotPageState extends State<ChatbotPage> {
 
       // 2. Speak the COMPLETE message only after the stream is fully finished
       if (botMessage.text != null && botMessage.text!.isNotEmpty) {
-        // == TTS PLACEHOLDER ==
+        await widget.tts.speak(botMessage.text!.trim());
       }
     } catch (e) {
       final errorStr = e.toString();
@@ -226,7 +227,7 @@ class ChatbotPageState extends State<ChatbotPage> {
           botMessage.text = 'Something went wrong: $e';
         }
       });
-      print('Chat Error: $e');
+      debugPrint('Chat Error: $e');
     } finally {
       setState(() => _isBotTyping = false);
       _scrollToBottom();
